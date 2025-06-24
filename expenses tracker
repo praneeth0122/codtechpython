@@ -1,0 +1,112 @@
+// Expense.kt (Entity)
+@Entity(tableName = "expenses")
+data class Expense(
+    @PrimaryKey(autoGenerate = true) val id: Int = 0,
+    val amount: Double,
+    val category: String,
+    val description: String,
+    val date: Long
+)
+
+// ExpenseDao.kt (DAO)
+@Dao
+interface ExpenseDao {
+    @Insert
+    suspend fun insertExpense(expense: Expense)
+
+    @Query("SELECT * FROM expenses ORDER BY date DESC")
+    fun getAllExpenses(): LiveData<List<Expense>>
+
+    @Query("SELECT category, SUM(amount) as total FROM expenses GROUP BY category")
+    fun getCategoryTotals(): LiveData<List<CategoryTotal>>
+}
+
+// CategoryTotal.kt (for chart summary)
+data class CategoryTotal(
+    val category: String,
+    val total: Double
+)
+
+// ExpenseDatabase.kt
+@Database(entities = [Expense::class], version = 1)
+abstract class ExpenseDatabase : RoomDatabase() {
+    abstract fun expenseDao(): ExpenseDao
+
+    companion object {
+        @Volatile
+        private var INSTANCE: ExpenseDatabase? = null
+
+        fun getDatabase(context: Context): ExpenseDatabase {
+            return INSTANCE ?: synchronized(this) {
+                val instance = Room.databaseBuilder(
+                    context.applicationContext,
+                    ExpenseDatabase::class.java,
+                    "expense_database"
+                ).build()
+                INSTANCE = instance
+                instance
+            }
+        }
+    }
+}
+
+// ExpenseRepository.kt
+class ExpenseRepository(private val dao: ExpenseDao) {
+    fun getAllExpenses() = dao.getAllExpenses()
+    fun getCategoryTotals() = dao.getCategoryTotals()
+    suspend fun insertExpense(expense: Expense) = dao.insertExpense(expense)
+}
+
+// ExpenseViewModel.kt
+class ExpenseViewModel(application: Application) : AndroidViewModel(application) {
+    private val repository: ExpenseRepository
+
+    val allExpenses: LiveData<List<Expense>>
+    val categoryTotals: LiveData<List<CategoryTotal>>
+
+    init {
+        val dao = ExpenseDatabase.getDatabase(application).expenseDao()
+        repository = ExpenseRepository(dao)
+        allExpenses = repository.getAllExpenses()
+        categoryTotals = repository.getCategoryTotals()
+    }
+
+    fun insert(expense: Expense) = viewModelScope.launch {
+        repository.insertExpense(expense)
+    }
+}
+
+// MainActivity.kt
+class MainActivity : AppCompatActivity() {
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        setContentView(R.layout.activity_main)
+
+        // Load fragments or navigation here
+    }
+}
+
+// ChartFragment.kt (Pie Chart Display)
+class ChartFragment : Fragment() {
+
+    private lateinit var viewModel: ExpenseViewModel
+
+    override fun onCreateView(
+        inflater: LayoutInflater, container: ViewGroup?,
+        savedInstanceState: Bundle?
+    ): View? {
+        val view = inflater.inflate(R.layout.fragment_chart, container, false)
+        val pieChart = view.findViewById<PieChart>(R.id.pieChart)
+
+        viewModel = ViewModelProvider(this)[ExpenseViewModel::class.java]
+        viewModel.categoryTotals.observe(viewLifecycleOwner) { totals ->
+            val entries = totals.map { PieEntry(it.total.toFloat(), it.category) }
+            val dataSet = PieDataSet(entries, "Expenses")
+            val data = PieData(dataSet)
+            pieChart.data = data
+            pieChart.invalidate()
+        }
+
+        return view
+    }
+}
